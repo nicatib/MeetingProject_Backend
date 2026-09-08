@@ -1,0 +1,10 @@
+bin/
+obj/
+
+service-account-key.json
+
+appsettings.json
+appsettings.Development.json
+appsettings.Local.json
+
+wwwroot/uploads/
