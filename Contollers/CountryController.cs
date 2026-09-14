@@ -2,6 +2,7 @@
 using Meeting_Project.Data;
 using Meeting_Project.Dtos.CountryDtos;
 using Meeting_Project.Entity;
+using Meeting_Project.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
@@ -20,11 +21,14 @@ namespace Meeting_Project.Contollers
         private readonly AppDbContext _context;
         private readonly UserManager<AppUser> _userManager;
         private readonly IHubContext<UserHub> _hubContext;
-        public CountryController(AppDbContext context, UserManager<AppUser> userManager, IHubContext<UserHub> hubContext)
+        private readonly IFcmService _fcmService;
+
+        public CountryController(AppDbContext context, UserManager<AppUser> userManager, IHubContext<UserHub> hubContext, IFcmService fcmService)
         {
             _context = context;
             this._userManager = userManager;
             _hubContext = hubContext;
+            _fcmService = fcmService;
         }
 
 
@@ -45,13 +49,11 @@ namespace Meeting_Project.Contollers
 
             var returnCountry = countries.Select(p => new ReturnCountryDto
             {
-                // ================= COUNTRY =================
 
                 Name = p.Name,
 
                 Id = p.Id,
                 MeetingRoomId = p.MeetingRoomId,
-                // ================= ADMIN =================
 
                 UserId = p.UserId,
                 MeetingRoom = p.MeetingRoom != null
@@ -66,7 +68,6 @@ namespace Meeting_Project.Contollers
                     : "",
 
                 
-                // ================= MEMBER =================
 
                 MemberId = p.MemberId,
 
@@ -77,7 +78,6 @@ namespace Meeting_Project.Contollers
                 MemberPhoneNumber= p.Member != null
                     ? p.Member.PhoneNumber
                     : "",
-                // ================= OTHER =================
 
                 CreatedTime = p.CreatedTime,
 
@@ -96,7 +96,6 @@ namespace Meeting_Project.Contollers
                     : "",
 
 
-                // ================= GOVERNMENTS =================
 
                 dtos = p.StateGovs
                     .Where(x => !x.isDeleted)
@@ -131,9 +130,10 @@ namespace Meeting_Project.Contollers
             return Ok(returnCountry);
         }
 
-        [HttpPost("CreateCountry")]
-        [Authorize(Roles = "SuperAdmin")]
-        public async Task<IActionResult> CreateCountry([FromForm] CreateCountryDto dto)
+[HttpPost("CreateCountry")]
+[Authorize(Roles = "SuperAdmin")]
+public async Task<IActionResult> CreateCountry(
+    [FromForm] CreateCountryDto dto)
         {
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
@@ -146,9 +146,9 @@ namespace Meeting_Project.Contollers
 
             dto.Name = dto.Name.Trim();
 
-            // =========================
+            // =========================================================
             // USER ID-LƏRİ TƏMİZLƏ
-            // =========================
+            // =========================================================
 
             dto.UserId = dto.UserId?.Trim();
             dto.MemberId = dto.MemberId?.Trim();
@@ -165,9 +165,9 @@ namespace Meeting_Project.Contollers
                 dto.MemberId = null;
             }
 
-            // =========================
+            // =========================================================
             // ÖLKƏNİN MÖVCUDLUĞUNU YOXLAYIRIQ
-            // =========================
+            // =========================================================
 
             var existCountry = await _context.Countrys
                 .AnyAsync(x =>
@@ -177,10 +177,9 @@ namespace Meeting_Project.Contollers
             if (existCountry)
                 return BadRequest("Bu adda ölkə mövcuddur");
 
-
-            // =========================
+            // =========================================================
             // ADMIN YOXLAMASI
-            // =========================
+            // =========================================================
 
             if (dto.UserId != null)
             {
@@ -189,76 +188,62 @@ namespace Meeting_Project.Contollers
                 if (admin == null)
                     return BadRequest("Admin tapılmadı");
 
-                // User həqiqətən Admin rolundadır?
                 var isAdmin = await _userManager.IsInRoleAsync(
                     admin,
-                    "Admin"
-                );
+                    "Admin");
 
                 if (!isAdmin)
+                {
                     return BadRequest(
-                        "Seçilmiş istifadəçi Admin rolunda deyil"
-                    );
-
-            
+                        "Seçilmiş istifadəçi Admin rolunda deyil");
+                }
             }
 
-
-            // =========================
+            // =========================================================
             // MEMBER YOXLAMASI
-            // =========================
+            // =========================================================
 
             if (dto.MemberId != null)
             {
                 var member = await _userManager.FindByIdAsync(
-                    dto.MemberId
-                );
+                    dto.MemberId);
 
                 if (member == null)
                     return BadRequest("Member tapılmadı");
 
-                // User həqiqətən Member rolundadır?
                 var isMember = await _userManager.IsInRoleAsync(
                     member,
-                    "Member"
-                );
+                    "Member");
 
                 if (!isMember)
+                {
                     return BadRequest(
-                        "Seçilmiş istifadəçi Member rolunda deyil"
-                    );
+                        "Seçilmiş istifadəçi Member rolunda deyil");
+                }
 
-                // Member başqa ölkəyə təyin olunub?
                 var memberAlreadyUsed = await _context.Countrys
                     .AnyAsync(x =>
                         !x.isDeleted &&
                         x.MemberId == dto.MemberId);
 
                 if (memberAlreadyUsed)
+                {
                     return BadRequest(
-                        "Bu Member artıq bir ölkəyə təyin olunub"
-                    );
+                        "Bu Member artıq bir ölkəyə təyin olunub");
+                }
             }
 
-
-            // =========================
-            // ADMIN VƏ MEMBER EYNİ OLA BİLMƏZ
-            // =========================
+            
 
             if (dto.UserId != null &&
                 dto.MemberId != null &&
                 dto.UserId == dto.MemberId)
             {
                 return BadRequest(
-                    "Admin və Member eyni istifadəçi ola bilməz"
-                );
+                    "Admin və Member eyni istifadəçi ola bilməz");
             }
 
-
-            // =========================
-            // COUNTRY YARAT
-            // =========================
-
+           
             var country = new Country
             {
                 Name = dto.Name,
@@ -266,7 +251,10 @@ namespace Meeting_Project.Contollers
                 CreatedTime = DateTime.Now.ToString("dd/MM/yyyy"),
 
                 isDeleted = false,
-                MeetingRoomId=dto.MeetingRoomId==null ? null : dto.MeetingRoomId,
+
+                MeetingRoomId = dto.MeetingRoomId == null
+                    ? null
+                    : dto.MeetingRoomId,
 
                 FlagUrl = dto.FlagUrl,
 
@@ -275,6 +263,7 @@ namespace Meeting_Project.Contollers
                 MemberId = dto.MemberId,
 
                 IsArrivedToBaku = false,
+
                 IsArrivedToHotel = false,
 
                 HotelId = dto.HotelId,
@@ -282,11 +271,146 @@ namespace Meeting_Project.Contollers
                 IsMain = dto.IsMain
             };
 
+            // =========================================================
+            // DATABASE
+            // =========================================================
 
             await _context.Countrys.AddAsync(country);
 
             await _context.SaveChangesAsync();
+            var adminUser = country.UserId != null
+                ? await _userManager.FindByIdAsync(country.UserId)
+                : null;
 
+            var memberUser = country.MemberId != null
+                ? await _userManager.FindByIdAsync(country.MemberId)
+                : null;
+
+            var countryData = new
+            {
+                id = country.Id,
+                name = country.Name,
+
+                userId = country.UserId,
+                memberId = country.MemberId,
+
+                fullName = adminUser != null
+                    ? $"{adminUser.FullName}".Trim()
+                    : null,
+
+                memberFullName = memberUser != null
+                    ? $"{memberUser.FullName}".Trim()
+                    : null,
+
+                phoneNumber = adminUser?.PhoneNumber,
+                memberPhoneNumber = memberUser?.PhoneNumber,
+
+                hotelId = country.HotelId,
+
+                flagUrl = country.FlagUrl,
+
+                isMain = country.IsMain,
+
+                isArrivedToHotel =
+                    country.IsArrivedToHotel,
+
+                isArrivedToBaku =
+                    country.IsArrivedToBaku,
+
+                dtos = new List<object>(),
+
+                type = "created"
+            };
+
+
+            try
+            {
+                var adminUsers = await _userManager
+                    .GetUsersInRoleAsync("Admin");
+
+                var memberUsers = await _userManager
+                    .GetUsersInRoleAsync("Member");
+
+                var userIds = adminUsers
+                    .Select(x => x.Id)
+                    .Concat(
+                        memberUsers.Select(x => x.Id)
+                    )
+                    .Where(x =>
+                        !string.IsNullOrWhiteSpace(x))
+                    .Distinct()
+                    .ToList();
+
+              
+
+                foreach (var userId in userIds)
+                {
+                    try
+                    {
+                        await _hubContext.Clients
+                            .User(userId)
+                            .SendAsync(
+                                "CountryCreated",
+                                countryData);
+
+                     
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine(
+                            $"❌ SignalR ERROR ({userId}): {ex.Message}");
+                    }
+                }
+
+                // =====================================================
+                // FIREBASE - BÜTÜN ADMIN + MEMBER
+                // =====================================================
+
+                var fcmTasks = userIds.Select(
+                    async userId =>
+                    {
+                        try
+                        {
+                            await _fcmService.SendNotificationAsync(
+                                userId,
+                                "Yeni ölkə yaradıldı",
+                                country.Name,
+                                new
+                                {
+                                    countryData,
+                                    type = "CountryCreated"
+                                });
+
+                            Console.WriteLine(
+                                $"✅ FCM göndərildi: {userId}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine(
+                                $"❌ FCM ERROR ({userId}): {ex.Message}");
+                        }
+                    });
+
+                await Task.WhenAll(fcmTasks);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"❌ Global SignalR/FCM ERROR: {ex.Message}");
+            }
+
+            // =========================================================
+            // PROCESS FINISHED
+            // =========================================================
+
+            Console.WriteLine("");
+            Console.WriteLine("========================================");
+            Console.WriteLine("🌍 COUNTRY CREATE PROCESS BITDI");
+            Console.WriteLine("========================================");
+
+            // =========================================================
+            // RESPONSE
+            // =========================================================
 
             return Ok(new
             {
@@ -612,33 +736,48 @@ namespace Meeting_Project.Contollers
 
             return Ok();
         }
-        [Authorize(Roles ="SuperAdmin")]
-
+        [Authorize(Roles = "SuperAdmin")]
         [HttpPost("addGoverment")]
         public async Task<IActionResult> AddGoverment([FromForm] AddGov dto)
         {
-            if (!ModelState.IsValid) return BadRequest(ModelState);
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            // =====================================================
+            // COUNTRY CHECK
+            // =====================================================
 
             var existCountry = await _context.Countrys
-                .FirstOrDefaultAsync(p => !p.isDeleted && p.Id == dto.CountryId);
+                .FirstOrDefaultAsync(p =>
+                    !p.isDeleted &&
+                    p.Id == dto.CountryId);
 
             if (existCountry == null)
                 return BadRequest("Belə bir ölkə yoxdur");
 
-            // ✅ DÜZGÜN YOXLAMA
-            var existGov = await _context.StateGovs.AnyAsync(g =>
-                !g.isDeleted &&
-                g.CountryId == dto.CountryId &&
-                g.Name.ToLower() == dto.Name.ToLower()
-            );
+            // =====================================================
+            // SAME GOVERNMENT CHECK
+            // =====================================================
+
+            var existGov = await _context.StateGovs
+                .AnyAsync(g =>
+                    !g.isDeleted &&
+                    g.CountryId == dto.CountryId &&
+                    g.Name.ToLower() == dto.Name.Trim().ToLower());
 
             if (existGov)
-                return BadRequest("Bu adda qurum artıq bu ölkədə mövcuddur");
+                return BadRequest(
+                    "Bu adda qurum artıq bu ölkədə mövcuddur"
+                );
+
+            // =====================================================
+            // CREATE GOVERNMENT
+            // =====================================================
 
             StateGov newGov = new()
             {
                 Name = dto.Name.Trim(),
-                IsMain=existCountry.IsMain,
+                IsMain = existCountry.IsMain,
                 CountryId = dto.CountryId,
                 CreatedTime = DateTime.Now.ToString("dd/MM/yyyy")
             };
@@ -646,12 +785,16 @@ namespace Meeting_Project.Contollers
             await _context.StateGovs.AddAsync(newGov);
             await _context.SaveChangesAsync();
 
-            // ✅ Flight əlavə
-            if (!string.IsNullOrWhiteSpace(dto.FlightNumber) && dto.FlightNumber != "undefined")
+            // =====================================================
+            // FLIGHT
+            // =====================================================
+
+            if (!string.IsNullOrWhiteSpace(dto.FlightNumber) &&
+                dto.FlightNumber != "undefined")
             {
                 var newFlight = new Flight
                 {
-                    FlightNumber = dto.FlightNumber,
+                    FlightNumber = dto.FlightNumber.Trim(),
                     StateGovId = newGov.Id,
                     IsArrived = false,
                     CreatedTime = DateTime.Now.ToString("dd/MM/yyyy")
@@ -661,7 +804,65 @@ namespace Meeting_Project.Contollers
                 await _context.SaveChangesAsync();
             }
 
-            return Ok("Goverment created successfully");
+            // =====================================================
+            // SIGNALR DATA
+            // =====================================================
+
+            var stateGovData = new
+            {
+                id = newGov.Id,
+                name = newGov.Name,
+                countryId = newGov.CountryId,
+                isMain = newGov.IsMain
+            };
+
+          
+
+            try
+            {
+                var adminUsers = await _userManager
+                    .GetUsersInRoleAsync("Admin");
+
+                var memberUsers = await _userManager
+                    .GetUsersInRoleAsync("Member");
+
+                var allUserIds = adminUsers
+                    .Select(x => x.Id)
+                    .Concat(memberUsers.Select(x => x.Id))
+                    .Distinct()
+                    .ToList();
+
+                foreach (var userId in allUserIds)
+                {
+                    await _hubContext.Clients
+                        .User(userId)
+                        .SendAsync(
+                            "StateGovCreated",
+                            stateGovData
+                        );
+                }
+
+                Console.WriteLine(
+                    $"✅ StateGovCreated göndərildi. User sayı: {allUserIds.Count}"
+                );
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"❌ StateGov SignalR Error: {ex.Message}"
+                );
+            }
+
+            // =====================================================
+            // RETURN
+            // =====================================================
+
+            return Ok(new
+            {
+                message = "Government created successfully",
+                stateGovId = newGov.Id,
+                countryId = newGov.CountryId
+            });
         }
         [HttpDelete("deleteGov")]
         [Authorize(Roles = "SuperAdmin")]

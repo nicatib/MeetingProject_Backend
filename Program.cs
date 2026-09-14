@@ -45,6 +45,7 @@ builder.Services.AddCors(options =>
     });
 });
 builder.Services.AddHostedService<MeetingExpirationService>();
+builder.Services.AddHostedService<MeetingReminderService>();
 
 var app = builder.Build();
 

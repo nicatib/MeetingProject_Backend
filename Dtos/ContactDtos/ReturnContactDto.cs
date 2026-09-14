@@ -7,6 +7,7 @@
         public string FromUserName { get; set; }
         public int Id { get; set; }
         public string FromUserId { get; set; }
+        
         public string ToUserId { get; set; }
         public string CreatedTime { get; set; }
         public string MessageStatus { get; set; }

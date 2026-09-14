@@ -1,19 +1,22 @@
 ﻿using FirebaseAdmin.Messaging;
 using Meeting_Project.Entity;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.Extensions.DependencyInjection; // Bunu əlavə edin
+using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 
 namespace Meeting_Project.Services
 {
     public interface IFcmService
     {
-        Task SendNotificationAsync(string userId, string title, string body, object data);
+        Task SendNotificationAsync(
+            string userId,
+            string title,
+            string body,
+            object data);
     }
 
     public class FcmService : IFcmService
     {
-        // UserManager əvəzinə IServiceScopeFactory istifadə edirik
         private readonly IServiceScopeFactory _scopeFactory;
 
         public FcmService(IServiceScopeFactory scopeFactory)
@@ -21,69 +24,126 @@ namespace Meeting_Project.Services
             _scopeFactory = scopeFactory;
         }
 
-        public async Task SendNotificationAsync(string userId, string title, string body, object data)
+        public async Task SendNotificationAsync(
+            string userId,
+            string title,
+            string body,
+            object data)
         {
-            using (var scope = _scopeFactory.CreateScope())
+            using var scope = _scopeFactory.CreateScope();
+
+            var userManager =
+                scope.ServiceProvider
+                    .GetRequiredService<UserManager<AppUser>>();
+
+            var user =
+                await userManager.FindByIdAsync(userId);
+
+            if (user == null)
             {
-                var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
-                var user = await userManager.FindByIdAsync(userId);
+                Console.WriteLine(
+                    $"[FCM] XƏTA: User tapılmadı: {userId}");
 
-                if (user == null || string.IsNullOrEmpty(user.FcmToken))
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(user.FcmToken))
+            {
+                Console.WriteLine(
+                    $"[FCM] XƏTA: User üçün FCM token yoxdur: {userId}");
+
+                return;
+            }
+
+            try
+            {
+                var jsonPayload =
+                    JsonSerializer.Serialize(data);
+
+                var message = new Message
                 {
-                    Console.WriteLine($"[FCM] XƏTA: İstifadəçi ID {userId} üçün FCM token tapılmadı.");
-                    return;
-                }
+                    Token = user.FcmToken,
 
-                try
-                {
-                    string jsonPayload = JsonSerializer.Serialize(data);
-
-                    var message = new Message()
+                    // Background / terminated vəziyyətdə
+                    // Android sistem notification-u göstərəcək.
+                    Notification = new Notification
                     {
-                        Token = user.FcmToken,
-                        // Notification obyekti sistem tərəfindən avtomatik bildiriş çıxarır.
-                        // Biz bunu şərhə alırıq ki, ancaq Data vasitəsilə Flutter tərəfində idarə edək.
-                        // Notification = new Notification { Title = title, Body = body }, 
+                        Title = title,
+                        Body = body
+                    },
 
-                        Data = new Dictionary<string, string>
-                {
-                    { "title", title },
-                    { "body", body },
-                    { "payload", jsonPayload },
-                    { "click_action", "FLUTTER_NOTIFICATION_CLICK" }
-                },
-                        Android = new AndroidConfig()
+                    // Flutter notification click zamanı
+                    // bu məlumatları oxuyacaq.
+                    Data = new Dictionary<string, string>
+                    {
                         {
-                            Priority = Priority.High,
-                            Notification = new AndroidNotification()
-                            {
-                                ChannelId = "meeting_channel_id",
-                                ClickAction = "FLUTTER_NOTIFICATION_CLICK"
-                            }
+                            "title",
+                            title
+                        },
+                        {
+                            "body",
+                            body
+                        },
+                        {
+                            "payload",
+                            jsonPayload
+                        },
+                        {
+                            "click_action",
+                            "FLUTTER_NOTIFICATION_CLICK"
                         }
-                    };
+                    },
 
-                    await FirebaseMessaging.DefaultInstance.SendAsync(message);
-                    Console.WriteLine($"[FCM] UĞURLU: Bildiriş istifadəçiyə göndərildi: {userId}");
-                }
-                catch (FirebaseMessagingException ex)
-                {
-                    // Əgər token artıq etibarsızdırsa (tətbiq silinib və ya token yenilənib)
-                    if (ex.MessagingErrorCode == MessagingErrorCode.Unregistered || ex.MessagingErrorCode == MessagingErrorCode.InvalidArgument)
+                    Android = new AndroidConfig
                     {
-                        Console.WriteLine($"[FCM] TOKEN SİLİNİR: İstifadəçi {userId} üçün token etibarsızdır.");
-                        user.FcmToken = null;
-                        await userManager.UpdateAsync(user);
+                        Priority = Priority.High,
+
+                        Notification = new AndroidNotification
+                        {
+                            ChannelId = "meeting_channel_id",
+                            Priority = NotificationPriority.HIGH,
+                            DefaultSound = true
+                        }
                     }
-                    else
-                    {
-                        Console.WriteLine($"[FCM] KRİTİK XƏTA: {ex.Message}");
-                    }
-                }
-                catch (Exception ex)
+                };
+
+                var response =
+                    await FirebaseMessaging
+                        .DefaultInstance
+                        .SendAsync(message);
+
+                Console.WriteLine(
+                    $"[FCM] UĞURLU: UserId={userId}");
+
+                Console.WriteLine(
+                    $"[FCM] MessageId={response}");
+            }
+            catch (FirebaseMessagingException ex)
+            {
+                Console.WriteLine(
+                    $"[FCM] FirebaseMessagingException: {ex.Message}");
+
+                if (
+                    ex.MessagingErrorCode ==
+                        MessagingErrorCode.Unregistered ||
+                    ex.MessagingErrorCode ==
+                        MessagingErrorCode.InvalidArgument
+                )
                 {
-                    Console.WriteLine($"[FCM] GÖZLƏNİLMƏZ XƏTA: {ex.Message}");
+                    Console.WriteLine(
+                        $"[FCM] TOKEN SİLİNİR: {userId}");
+
+                    user.FcmToken = null;
+
+                    await userManager.UpdateAsync(user);
                 }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"[FCM] GÖZLƏNİLMƏZ XƏTA: {ex}");
+
+                throw;
             }
         }
     }

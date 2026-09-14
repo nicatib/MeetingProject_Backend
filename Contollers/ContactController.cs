@@ -5,6 +5,7 @@ using Meeting_Project.Dtos.ContactDtos;
 using Meeting_Project.Dtos.ContactDtos;
 using Meeting_Project.Entity;
 using Meeting_Project.Helper;
+using Meeting_Project.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
@@ -24,32 +25,43 @@ namespace Meeting_Project.Contollers
         private readonly UserManager<AppUser> _userManager;
         private readonly AppDbContext _context;
         private readonly IHubContext<UserHub> _hubContext;
+        private readonly IFcmService _fcmService;
 
-        public ContactController(IHubContext<UserHub> hubContext, AppDbContext context, UserManager<AppUser> userManager)
+        public ContactController(IHubContext<UserHub> hubContext, AppDbContext context, UserManager<AppUser> userManager, IFcmService fcmService)
         {
             _hubContext = hubContext;
             _context = context;
             _userManager = userManager;
+            _fcmService = fcmService;
         }
 
 
         [Authorize]
         [HttpPost("sendMessage")]
-        public async Task<IActionResult> SendMessage([FromBody] SendMessageDto dto) 
+        public async Task<IActionResult> SendMessage(
+      [FromBody] SendMessageDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.Message))
                 return BadRequest("Mesaj mətni boş ola bilməz.");
 
-            var senderId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrEmpty(senderId)) return Unauthorized("İstifadəçi tanınmadı.");
-            var existSenderUser=await _userManager.FindByIdAsync(senderId);
-            if (existSenderUser == null) return NotFound("Gonderen istifadəçi tapılmadı.");
+            var senderId =
+                User.FindFirstValue(ClaimTypes.NameIdentifier);
 
+            if (string.IsNullOrEmpty(senderId))
+                return Unauthorized("İstifadəçi tanınmadı.");
 
-            var existToUser = await _userManager.FindByIdAsync(dto.ToUserId);
-            if (existToUser == null) return NotFound("Qəbuledici istifadəçi tapılmadı.");
+            var existSenderUser =
+                await _userManager.FindByIdAsync(senderId);
 
-         
+            if (existSenderUser == null)
+                return NotFound("Göndərən istifadəçi tapılmadı.");
+
+            var existToUser =
+                await _userManager.FindByIdAsync(dto.ToUserId);
+
+            if (existToUser == null)
+                return NotFound("Qəbuledici istifadəçi tapılmadı.");
+
             Contact newContact = new()
             {
                 Message = dto.Message,
@@ -57,37 +69,139 @@ namespace Meeting_Project.Contollers
                 ToUserId = dto.ToUserId,
                 MessageStatus = ContactStatus.Unread.ToString(),
                 CreatedTime = DateTime.Now.ToString("MM/dd/yyyy")
-
             };
 
             await _context.ContactMessages.AddAsync(newContact);
             await _context.SaveChangesAsync();
-            await _hubContext.Clients.User(dto.ToUserId).SendAsync("ReceiveMessage", new
+
+            // =========================================================
+            // SIGNALR
+            // =========================================================
+
+            await _hubContext.Clients
+                .User(dto.ToUserId)
+                .SendAsync(
+                    "ReceiveMessage",
+                    new
+                    {
+                        fromUser = senderId,
+                        message = newContact.Message,
+                        text = dto.Message,
+                        toUserId = dto.ToUserId,
+                        toUserName = existToUser.UserName,
+                        fromUserName = existSenderUser.FullName,
+                        createdAt = newContact.CreatedTime,
+                        messageStatus = newContact.MessageStatus
+                    });
+
+            // =========================================================
+            // FCM NOTIFICATION
+            // =========================================================
+
+            try
             {
-                fromUser = senderId,
-                message = newContact.Message,
-                text = dto.Message,
-                toUserId=dto.ToUserId,
-                toUserName=existToUser.UserName,
-                fromUserName=existSenderUser.FullName,
-                createdAt=newContact.CreatedTime,
-                messageStatus=newContact.MessageStatus
+                await _fcmService.SendNotificationAsync(
+                    dto.ToUserId,
+                    "Yeni mesaj",
+                    $"{existSenderUser.FullName}: {dto.Message}",
+                    new
+                    {
+                        type = "NewMessage",
+
+                        messageId = newContact.Id,
+
+                        fromUserId = senderId,
+                        fromUserName = existSenderUser.FullName,
+
+                        toUserId = dto.ToUserId,
+                        toUserName = existToUser.UserName,
+
+                        message = dto.Message,
+
+                        createdAt = newContact.CreatedTime,
+
+                        messageStatus = newContact.MessageStatus
+                    });
+            }
+            catch (Exception ex)
+            {
+                // FCM xətası mesajın göndərilməsinə mane olmasın
+                Console.WriteLine(
+                    $"❌ Message FCM error: {ex.Message}");
+            }
+
+            return Ok(new
+            {
+                message = "Məktubunuz uğurla göndərildi."
             });
-            return Ok(new { message = "Məktubunuz uğurla göndərildi." });
         }
 
-        [Authorize, HttpGet("getallUserMessage")]
+        [Authorize]
+        [HttpGet("getallUserMessage")]
         public async Task<IActionResult> GetAll()
         {
             var currentUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
+            if (currentUserId == null)
+                return Unauthorized("İstifadəçi tapılmadı.");
+
             var result = await _context.ContactMessages
-          .Where(m => m.ToUserId == currentUserId && !m.isDeleted)
-                .Join(_context.Users,
+                .Where(m =>
+                    m.ToUserId == currentUserId &&
+                    !m.isDeleted)
+                .Join(
+                    _context.Users,
                     contact => contact.FromUserId,
                     sender => sender.Id,
-                    (contact, sender) => new { contact, sender })
-                .Join(_context.Users,
+                    (contact, sender) => new { contact, sender }
+                )
+                .Join(
+                    _context.Users,
+                    combined => combined.contact.ToUserId,
+                    receiver => receiver.Id,
+                    (combined, receiver) => new ReturnContactDto
+                    {
+                        Id = combined.contact.Id,
+                        Message = combined.contact.Message,
+                        MessageStatus = combined.contact.MessageStatus,
+                        CreatedTime = combined.contact.CreatedTime,
+                        FromUserName = combined.sender.UserName,
+                        FromUserId = combined.sender.Id,
+                        ToUserId = combined.contact.ToUserId,
+                        ToUseName = receiver.UserName
+                    }
+                )
+                .OrderByDescending(x => x.Id)
+                .ToListAsync();
+
+            return Ok(result);
+        }
+
+        [Authorize, HttpGet("getArchivedUserMessage")]
+        public async Task<IActionResult> GetArchived()
+        {
+            var currentUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (currentUserId == null)
+            {
+                return Unauthorized("İstifadəçi tapılmadı.");
+            }
+
+            var result = await _context.ContactMessages
+                .Where(m =>
+                    m.ToUserId == currentUserId &&
+                    m.isDeleted)
+                .Join(
+                    _context.Users,
+                    contact => contact.FromUserId,
+                    sender => sender.Id,
+                    (contact, sender) => new
+                    {
+                        contact,
+                        sender
+                    })
+                .Join(
+                    _context.Users,
                     combined => combined.contact.ToUserId,
                     receiver => receiver.Id,
                     (combined, receiver) => new ReturnContactDto
@@ -107,28 +221,76 @@ namespace Meeting_Project.Contollers
             return Ok(result);
         }
 
-        [Authorize, HttpDelete("deleteMessage/{id}")]
+
+
+
+
+        [Authorize]
+        [HttpDelete("deleteMessage/{id}")]
         public async Task<IActionResult> DeleteMessage(int id)
         {
             var currentUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (currentUserId == null) return Unauthorized("İstifadəçi tapılmadı.");
+
+            if (currentUserId == null)
+                return Unauthorized("İstifadəçi tapılmadı.");
 
             var message = await _context.ContactMessages
-                .FirstOrDefaultAsync(m => m.Id == id && m.ToUserId == currentUserId);
+                .FirstOrDefaultAsync(m =>
+                    m.Id == id &&
+                    m.ToUserId == currentUserId &&
+                    !m.isDeleted);
 
             if (message == null)
             {
-                return NotFound("Mesaj tapılmadı və ya bu mesajı silmək üçün icazəniz yoxdur.");
+                return NotFound(
+                    "Mesaj tapılmadı və ya artıq arxivdədir."
+                );
             }
 
             message.isDeleted = true;
 
-          
-            _context.ContactMessages.Update(message);
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = "Mesaj uğurla silindi." });
+            return Ok(new
+            {
+                message = "Mesaj arxivə göndərildi."
+            });
         }
+
+
+        [Authorize]
+        [HttpPut("restoreMessage/{id}")]
+        public async Task<IActionResult> RestoreMessage(int id)
+        {
+            var currentUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (currentUserId == null)
+                return Unauthorized("İstifadəçi tapılmadı.");
+
+            var message = await _context.ContactMessages
+                .FirstOrDefaultAsync(m =>
+                    m.Id == id &&
+                    m.ToUserId == currentUserId &&
+                    m.isDeleted);
+
+            if (message == null)
+            {
+                return NotFound(
+                    "Mesaj tapılmadı və ya artıq aktiv mesajlardadır."
+                );
+            }
+
+            message.isDeleted = false;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                message = "Mesaj yenidən Messages bölməsinə qaytarıldı."
+            });
+        }
+
+
 
         [Authorize,HttpPut("changeStatus")]
         public async Task<IActionResult> ChangeStatus(int id)

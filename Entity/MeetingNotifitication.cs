@@ -20,6 +20,7 @@
         public bool IsShown { get; set; }
         public bool? IsAccepted { get; set; }
         public string? Reason { get; set; }
+        public bool? isDeleted { get; set; }
 
 
     }

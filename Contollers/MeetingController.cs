@@ -536,7 +536,7 @@ namespace Meeting_Project.Contollers
                                 IsRead = false,
 
                                 IsShown = false,
-
+                                isDeleted=false,
                                 MeetingId =
                                     meeting.Id,
 
@@ -664,6 +664,7 @@ namespace Meeting_Project.Contollers
                                             );
 
 
+                                        Console.WriteLine($"Gelen data {notif.MeetingId}");
 
                                         await _fcmService
                                             .SendNotificationAsync(
@@ -775,9 +776,6 @@ namespace Meeting_Project.Contollers
                 if (meeting == null)
                     return BadRequest("Meeting not found");
 
-                // =========================================================
-                // STATUS CHECK
-                // =========================================================
 
                 if (meeting.Status == MeetingStatus.Finished)
                     return BadRequest("Meeting artıq bitib");
@@ -798,14 +796,8 @@ namespace Meeting_Project.Contollers
                     );
                 }
 
-                // =========================================================
-                // TIME CHECK
-                // =========================================================
-
                 var now = DateTime.Now;
 
-                // Görüşün başlama vaxtı hələ çatmayıbsa
-                // manual olaraq başlatmaq olmaz.
                 if (now < meeting.PlannedStartTime)
                 {
                     return BadRequest(
@@ -815,9 +807,6 @@ namespace Meeting_Project.Contollers
                     );
                 }
 
-                // =========================================================
-                // ROOM CONFLICT
-                // =========================================================
 
                 var roomConflict = await _context.Meetings
                     .AnyAsync(m =>
@@ -1010,26 +999,10 @@ namespace Meeting_Project.Contollers
                     );
                 }
 
-                // =========================================================
-                // CURRENT TIME
-                // =========================================================
 
                 var now = DateTime.Now;
 
-                // =========================================================
-                // MANUAL FINISH TIME CHECK
-                // =========================================================
-                //
-                // PlannedEndTime:
-                //       11:00
-                //
-                // Manual Finish:
-                //       11:00 - 11:15 -> mümkündür
-                //
-                // 11:15-dən sonra:
-                //       BackgroundService avtomatik bitirməlidir.
-                //
-                // =========================================================
+              
 
                 var allowedEndTimeForManualFinish =
                     meeting.PlannedEndTime.AddMinutes(15);
@@ -1043,9 +1016,7 @@ namespace Meeting_Project.Contollers
                     );
                 }
 
-                // =========================================================
-                // FINISH
-                // =========================================================
+             
 
                 meeting.Status =
                     MeetingStatus.Finished;
@@ -1053,9 +1024,6 @@ namespace Meeting_Project.Contollers
                 // Əsl faktiki bitmə vaxtı
                 meeting.ActualEndTime = now;
 
-                // =========================================================
-                // FREE ROOM
-                // =========================================================
 
                 var room = await _context.HotelRooms
                     .FirstOrDefaultAsync(
@@ -1422,17 +1390,21 @@ namespace Meeting_Project.Contollers
 
         [HttpPost("AddCircleMeeting")]
         [Authorize(Roles = "SuperAdmin")]
-        public async Task<IActionResult> AddCircleMeeting([FromForm] AddCircleMeetingDto dto)
+        public async Task<IActionResult> AddCircleMeeting(
+     [FromForm] AddCircleMeetingDto dto)
         {
             try
             {
+
                 if (!ModelState.IsValid)
                     return BadRequest(ModelState);
 
                 if (dto.File == null || dto.File.Length == 0)
                     return BadRequest("File yoxdur");
 
-                var fileName = Guid.NewGuid() + Path.GetExtension(dto.File.FileName);
+               
+                var fileName =
+                    Guid.NewGuid() + Path.GetExtension(dto.File.FileName);
 
                 var path = Path.Combine(
                     Directory.GetCurrentDirectory(),
@@ -1444,11 +1416,14 @@ namespace Meeting_Project.Contollers
 
                 var fullPath = Path.Combine(path, fileName);
 
-                using (var stream = new FileStream(fullPath, FileMode.Create))
+                await using (var stream = new FileStream(
+                    fullPath,
+                    FileMode.Create))
                 {
                     await dto.File.CopyToAsync(stream);
                 }
 
+               
                 var newTable = new CircleTable
                 {
                     Title = dto.Title,
@@ -1457,10 +1432,16 @@ namespace Meeting_Project.Contollers
                 };
 
                 await _context.CircleTables.AddAsync(newTable);
+
                 await _context.SaveChangesAsync();
 
-                var govIds = dto.dtos.Select(item => item.StateGovId).Distinct().ToList();
+               
+                var govIds = dto.dtos
+                    .Select(item => item.StateGovId)
+                    .Distinct()
+                    .ToList();
 
+               
                 foreach (var item in dto.dtos)
                 {
                     var seat = new Seat
@@ -1476,19 +1457,61 @@ namespace Meeting_Project.Contollers
 
                 var result = await _context.SaveChangesAsync();
 
-
                 var countryIds = await _context.StateGovs
                     .Where(x => govIds.Contains(x.Id))
                     .Select(x => x.CountryId)
                     .Distinct()
                     .ToListAsync();
 
-                var userIds = await _context.Users
-                     .Where(x => x.CountryId != null && countryIds.Contains(x.CountryId.Value))
-                     .Select(x => x.Id)
-                     .Distinct()
-                     .ToListAsync();
+               
 
+                var countryUsers = await _context.Countrys
+                    .Where(x => countryIds.Contains(x.Id))
+                    .Select(x => new
+                    {
+                        x.UserId,
+                        x.MemberId
+                    })
+                    .ToListAsync();
+
+
+                var userIds = countryUsers
+                    .SelectMany(x => new[]
+                    {
+                x.UserId,
+                x.MemberId
+                    })
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct()
+                    .ToList();
+
+    
+
+                Console.WriteLine(
+                    "=============================================="
+                );
+
+                Console.WriteLine(
+                    $"CircleMeeting Created. TableId: {newTable.Id}"
+                );
+
+                Console.WriteLine(
+                    $"CountryIds: {string.Join(", ", countryIds)}"
+                );
+
+                Console.WriteLine(
+                    $"UserIds: {string.Join(", ", userIds)}"
+                );
+
+                Console.WriteLine(
+                    $"GovernmentIds: {string.Join(", ", govIds)}"
+                );
+
+                Console.WriteLine(
+                    "=============================================="
+                );
+
+               
                 var govInfos = await _context.StateGovs
                     .Where(x => govIds.Contains(x.Id))
                     .Select(x => new
@@ -1500,34 +1523,112 @@ namespace Meeting_Project.Contollers
 
                 var participantsText = string.Join(
                     " - ",
-                    govInfos.Select(x => $"{x.GovName} ({x.CountryName})")
+                    govInfos.Select(x =>
+                        $"{x.GovName} ({x.CountryName})"
+                    )
                 );
 
-                var currentTimestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+                var currentTimestamp =
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm");
 
-                _ = Task.Run(async () =>
+
+                foreach (var userId in userIds)
                 {
                     try
                     {
-                        foreach (var userId in userIds)
+                        Console.WriteLine(
+                            $"=============================================="
+                        );
+
+                        Console.WriteLine(
+                            $"CircleMeeting notification -> UserId: {userId}"
+                        );
+
+                        try
                         {
                             await _hubContext.Clients
                                 .User(userId.ToString())
-                                .SendAsync("CircleMeetingCreated", new
+                                .SendAsync(
+                                    "CircleMeetingCreated",
+                                    new
+                                    {
+                                        tableId = newTable.Id,
+                                        title = newTable.Title,
+                                        message = participantsText,
+                                        createdAt = currentTimestamp,
+                                        type = "CircleMeetingCreated"
+                                    }
+                                );
+
+                            Console.WriteLine(
+                                $"✅ SignalR göndərildi -> UserId: {userId}"
+                            );
+                        }
+                        catch (Exception signalREx)
+                        {
+                            Console.WriteLine(
+                                $"❌ SignalR Error -> UserId: {userId}"
+                            );
+
+                            Console.WriteLine(
+                                signalREx.Message
+                            );
+                        }
+
+
+                        try
+                        {
+                            Console.WriteLine(
+                                $"📱 FCM göndərilir -> UserId: {userId}"
+                            );
+
+                            await _fcmService.SendNotificationAsync(
+                                userId.ToString(),
+
+                                "Yeni dairəvi görüş",
+
+                                $"{newTable.Title}: {participantsText}",
+
+                                new
                                 {
                                     tableId = newTable.Id,
                                     title = newTable.Title,
                                     message = participantsText,
                                     createdAt = currentTimestamp,
                                     type = "CircleMeetingCreated"
-                                });
+                                }
+                            );
+
+                            Console.WriteLine(
+                                $"✅ FCM göndərildi -> UserId: {userId}"
+                            );
                         }
+                        catch (Exception fcmEx)
+                        {
+                            Console.WriteLine(
+                                $"❌ FCM Error -> UserId: {userId}"
+                            );
+
+                            Console.WriteLine(
+                                fcmEx.Message
+                            );
+                        }
+
+                        Console.WriteLine(
+                            $"=============================================="
+                        );
                     }
-                    catch (Exception hubEx)
+                    catch (Exception ex)
                     {
-                        Console.WriteLine($"Hub Error: {hubEx.Message}");
+                        Console.WriteLine(
+                            $"❌ CircleMeeting notification Error -> UserId: {userId}"
+                        );
+
+                        Console.WriteLine(
+                            ex.Message
+                        );
                     }
-                });
+                }
 
 
                 return Ok(new
@@ -1539,11 +1640,17 @@ namespace Meeting_Project.Contollers
             }
             catch (Exception ex)
             {
-                return BadRequest(ex.InnerException?.Message ?? ex.Message);
+                Console.WriteLine(
+                    $"❌ AddCircleMeeting Error:"
+                );
+
+                Console.WriteLine(ex);
+
+                return BadRequest(
+                    ex.InnerException?.Message ?? ex.Message
+                );
             }
         }
-
-
 
 
 
@@ -1724,14 +1831,11 @@ public async Task<IActionResult> GetAllCircleMeetingByCountryId()
 
 
 
-[Authorize]
-[HttpPost("getMeetingsWithFilter")]
-public async Task<IActionResult> GetMeetingInCountry(
-    GetMeetingDtoByCountryId filterDto)
+        [Authorize]
+        [HttpPost("getMeetingsWithFilter")]
+        public async Task<IActionResult> GetMeetingInCountry(
+            GetMeetingDtoByCountryId filterDto)
         {
-            // =========================================================
-            // 1. LOGIN OLMUŞ USER
-            // =========================================================
 
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
@@ -1745,29 +1849,18 @@ public async Task<IActionResult> GetMeetingInCountry(
 
             var role = User.FindFirstValue(ClaimTypes.Role);
 
-            // =========================================================
-            // 2. PAGINATION
-            // =========================================================
-
             if (filterDto.page < 1)
                 filterDto.page = 1;
 
             if (filterDto.take < 1)
                 filterDto.take = 5000;
 
-            // =========================================================
-            // 3. USER-IN AID OLDUĞU COUNTRY-LƏR
-            // =========================================================
 
-            List<int> accessibleCountryIds;
+            List<int> ownCountryIds;
 
             if (role == "Admin")
             {
-                // -----------------------------------------------------
-                // ADMIN → bir neçə Country ola bilər
-                // -----------------------------------------------------
-
-                accessibleCountryIds = await _context.Countrys
+                ownCountryIds = await _context.Countrys
                     .AsNoTracking()
                     .Where(c =>
                         !c.isDeleted &&
@@ -1777,10 +1870,6 @@ public async Task<IActionResult> GetMeetingInCountry(
             }
             else if (role == "Member")
             {
-                // -----------------------------------------------------
-                // MEMBER → yalnız 1 Country
-                // -----------------------------------------------------
-
                 var memberCountryId = await _context.Countrys
                     .AsNoTracking()
                     .Where(c =>
@@ -1798,7 +1887,7 @@ public async Task<IActionResult> GetMeetingInCountry(
                     });
                 }
 
-                accessibleCountryIds = new List<int>
+                ownCountryIds = new List<int>
         {
             memberCountryId.Value
         };
@@ -1808,11 +1897,8 @@ public async Task<IActionResult> GetMeetingInCountry(
                 return Forbid();
             }
 
-            // =========================================================
-            // 4. USER-IN HEÇ BİR COUNTRY-SI YOXDUR
-            // =========================================================
 
-            if (!accessibleCountryIds.Any())
+            if (!ownCountryIds.Any())
             {
                 return Ok(new
                 {
@@ -1821,76 +1907,35 @@ public async Task<IActionResult> GetMeetingInCountry(
                 });
             }
 
-            // =========================================================
-            // 5. MEETING QUERY
-            // =========================================================
 
             var query = _context.Meetings
                 .AsNoTracking()
                 .AsQueryable();
 
-            // =========================================================
-            // 6. ƏSAS ACCESS FILTER
-            //
-            // Meeting-də user-in aid olduğu Country-lərdən
-            // ən azı biri iştirak etməlidir.
-            // =========================================================
+           
 
             query = query.Where(m =>
+                m.Status != MeetingStatus.Pending &&
                 m.Participants.Any(p =>
-                    accessibleCountryIds.Contains(
+                    ownCountryIds.Contains(
                         p.Government.CountryId
                     )
                 )
-                &&
-                m.Status != MeetingStatus.Pending
             );
 
-            // =========================================================
-            // 7. COUNTRY FILTER
-            //
-            // Frontend countryIds göndəribsə:
-            //
-            // Admin:
-            //   accessibleCountryIds = [1,2,3]
-            //   filter countryIds    = [1,2]
-            //
-            // nəticə:
-            //   [1,2]
-            //
-            // Member:
-            //   accessibleCountryIds = [1]
-            //   filter countryIds    = [2]
-            //
-            // nəticə:
-            //   boş
-            //
-            // Yəni user öz səlahiyyətindən kənara çıxa bilmir.
-            // =========================================================
+           
 
             if (filterDto.countryIds != null &&
                 filterDto.countryIds.Any())
             {
-                // Yalnız user-in icazəli olduğu Country-ləri götürürük
-                var allowedFilterCountryIds =
+                var selectedCountryIds =
                     filterDto.countryIds
-                        .Intersect(accessibleCountryIds)
+                        .Distinct()
                         .ToList();
-
-                // Əgər göndərilən Country-lərin heç biri
-                // user-ə aid deyilsə, nəticə boş olmalıdır.
-                if (!allowedFilterCountryIds.Any())
-                {
-                    return Ok(new
-                    {
-                        TotalCount = 0,
-                        Meetings = new List<ReturnMeetingDto>()
-                    });
-                }
 
                 query = query.Where(m =>
                     m.Participants.Any(p =>
-                        allowedFilterCountryIds.Contains(
+                        selectedCountryIds.Contains(
                             p.Government.CountryId
                         )
                     )
@@ -1900,7 +1945,7 @@ public async Task<IActionResult> GetMeetingInCountry(
             // =========================================================
             // 8. STATUS FILTER
             //
-            // 4 → bütün statuslar
+            // 4 = bütün statuslar
             // =========================================================
 
             if (filterDto.Status.HasValue &&
@@ -2004,14 +2049,18 @@ public async Task<IActionResult> GetMeetingInCountry(
 
                             CountryName =
                                 p.Government.Country.Name,
-                            isAccespted=p.isAccepted,
+
+                            isAccespted =
+                                p.isAccepted
                         })
                         .ToList()
                 })
 
                 .ToListAsync();
 
-
+            // =========================================================
+            // 12. RESPONSE
+            // =========================================================
 
             return Ok(new
             {
@@ -2020,8 +2069,6 @@ public async Task<IActionResult> GetMeetingInCountry(
             });
         }
 
-
-        ////////////////////////////////////////////////////////////////////
 
 
 
@@ -2109,10 +2156,6 @@ public async Task<IActionResult> GetMeetingInCountry(
                 _context.Meetings.AsNoTracking();
 
 
-            // =====================================================
-            // ADMIN
-            // Admin bir neçə Country-yə sahib ola bilər
-            // =====================================================
 
             if (role == "Admin")
             {
@@ -2145,11 +2188,6 @@ public async Task<IActionResult> GetMeetingInCountry(
             }
 
 
-            // =====================================================
-            // MEMBER
-            // Member yalnız təyin olunduğu Country-ni görür
-            // =====================================================
-
             else if (role == "Member")
             {
                 var countryIds = await _context.Countrys
@@ -2162,7 +2200,6 @@ public async Task<IActionResult> GetMeetingInCountry(
                     .ToListAsync();
 
 
-                // Member-ə Country təyin edilməyibsə
                 if (!countryIds.Any())
                 {
                     return Ok(new
@@ -2182,9 +2219,7 @@ public async Task<IActionResult> GetMeetingInCountry(
             }
 
 
-            // =====================================================
-            // MOBİL ÜÇÜN İCAZƏSİZ ROLE
-            // =====================================================
+           
 
             else
             {
@@ -2260,91 +2295,120 @@ public async Task<IActionResult> GetMeetingInCountry(
 
         ////////////////////////////////////////////////////////////////////
 
-
         [Authorize]
         [HttpGet("getallNotification")]
         public async Task<IActionResult> getAllNotification()
         {
-            var userId =
-                User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
             if (string.IsNullOrEmpty(userId))
                 return Unauthorized();
 
-            var existUser =
-                await _userManager.FindByIdAsync(userId);
+            var existUser = await _userManager.FindByIdAsync(userId);
 
             if (existUser == null)
                 return BadRequest("User not found");
 
+            var returnNotification = await _context.Notifitications
+                .Where(p =>
+                    p.UserId == existUser.Id &&
+                    p.isDeleted != true)
+                .OrderByDescending(p => p.Id)
+                .Select(p => new ReturnNotificationDto
+                {
+                    // =============================================
+                    // BASIC
+                    // =============================================
 
-            var returnNotification =
-                await _context.Notifitications
+                    Id = p.Id,
 
-                    .Where(p => p.UserId == existUser.Id)
+                    Title = p.Title,
 
-                    .OrderByDescending(p => p.Id)
+                    Message = p.Message,
 
-                    .Select(p => new ReturnNotificationDto
-                    {
-                        // =============================================
-                        // BASIC
-                        // =============================================
+                    UserId = p.UserId,
 
-                        Id = p.Id,
+                    IsRead = p.IsRead,
 
-                        Title = p.Title,
+                    CreatedAt = p.CreatedAt,
 
-                        Message = p.Message,
+                    Reason = p.Reason,
 
-                        UserId = p.UserId,
+                    plannedTime = p.plannedTime,
 
-                        IsRead = p.IsRead,
+                    MeetingId = p.MeetingId,
 
-                        CreatedAt = p.CreatedAt,
+                    Type = p.Type,
 
-                        Reason = p.Reason,
+                    IsShown = p.IsShown,
 
-                        plannedTime = p.plannedTime,
+                    // =============================================
+                    // GOVERNMENT
+                    // =============================================
 
-                        MeetingId = p.MeetingId,
+                    GovernmentId = p.GovernmentId,
 
-                        Type = p.Type,
+                    GovermentName = p.GovermentName,
 
-                        IsShown = p.IsShown,
+                    // =============================================
+                    // ACCEPTED
+                    // =============================================
 
-
-                        // =============================================
-                        // GOVERNMENT
-                        // =============================================
-
-                        GovernmentId = p.GovernmentId,
-
-                        GovermentName = p.GovermentName,
-
-
-                        // =============================================
-                        // ACCEPTED
-                        // =============================================
-
-                        IsAccepted =
-                            p.Meeting != null &&
-                            p.Meeting.Status ==
-                                MeetingStatus.Cancelled
-
-                                ? false
-
-                                : p.IsAccepted
-                    })
-
-                    .ToListAsync();
-
+                    IsAccepted =
+                        p.Meeting != null &&
+                        p.Meeting.Status == MeetingStatus.Cancelled
+                            ? false
+                            : p.IsAccepted
+                })
+                .ToListAsync();
 
             return Ok(returnNotification);
         }
-
         ////////////////////////////////////////////////////////////////////
+        [Authorize]
+        [HttpGet("getArchivedNotification")]
+        public async Task<IActionResult> GetArchivedNotification()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
+            if (string.IsNullOrEmpty(userId))
+                return Unauthorized();
+
+            var existUser = await _userManager.FindByIdAsync(userId);
+
+            if (existUser == null)
+                return BadRequest("User not found");
+
+            var returnNotification = await _context.Notifitications
+                .Where(p =>
+                    p.UserId == existUser.Id &&p.isDeleted==true)
+                .OrderByDescending(p => p.Id)
+                .Select(p => new ReturnNotificationDto
+                {
+                    Id = p.Id,
+                    Title = p.Title,
+                    Message = p.Message,
+                    UserId = p.UserId,
+                    IsRead = p.IsRead,
+                    CreatedAt = p.CreatedAt,
+                    Reason = p.Reason,
+                    plannedTime = p.plannedTime,
+                    MeetingId = p.MeetingId,
+                    Type = p.Type,
+                    IsShown = p.IsShown,
+                    GovernmentId = p.GovernmentId,
+                    GovermentName = p.GovermentName,
+
+                    IsAccepted =
+                        p.Meeting != null &&
+                        p.Meeting.Status == MeetingStatus.Cancelled
+                            ? false
+                            : p.IsAccepted
+                })
+                .ToListAsync();
+
+            return Ok(returnNotification);
+        }
 
         [Authorize]
         [HttpPost("DeclineNotification")]
@@ -2385,9 +2449,6 @@ public async Task<IActionResult> GetMeetingInCountry(
             }
 
 
-            // =========================================================
-            // 4. ROLE
-            // =========================================================
 
             var role =
                 User.FindFirstValue(ClaimTypes.Role);
@@ -2411,9 +2472,6 @@ public async Task<IActionResult> GetMeetingInCountry(
             }
 
 
-            // =========================================================
-            // 6. USER
-            // =========================================================
 
             var user =
                 await _context.Users
@@ -2548,18 +2606,7 @@ public async Task<IActionResult> GetMeetingInCountry(
             participant.isAccepted = false;
 
 
-            // =========================================================
-            // 16. SAME GOVERNMENT NOTIFICATIONS
-            // =========================================================
-            //
-            // Eyni Government üçün:
-            //
-            // Admin notification
-            // Member notification
-            //
-            // varsa ikisi də false edilir.
-            //
-            // =========================================================
+           
 
             var relatedNotifications =
                 await _context.Notifitications
@@ -2599,30 +2646,10 @@ public async Task<IActionResult> GetMeetingInCountry(
                         p.isAccepted == false);
 
 
-            // =========================================================
-            // 18. MEETING STATUS
-            // =========================================================
-            //
-            // PLANNED:
-            // accepted >= 2
-            // pending == 0
-            //
-            // CANCELLED:
-            // pending == 0
-            // accepted < 2
-            //
-            // PENDING:
-            // pending > 0
-            //
-            // =========================================================
 
             bool isCancelled = false;
             bool isPlanned = false;
 
-
-            // ---------------------------------------------------------
-            // PLANNED
-            // ---------------------------------------------------------
 
             if (acceptedGovernmentCount >= 2 &&
                 pendingGovernmentCount == 0)
@@ -2659,23 +2686,7 @@ public async Task<IActionResult> GetMeetingInCountry(
             }
 
 
-            // =========================================================
-            // 19. ƏGƏR MEETING CANCELLED OLARSA
-            // =========================================================
-            //
-            // Burada MeetingParticipant-ləri dəyişmirik.
-            //
-            // Məsələn:
-            //
-            // A = true
-            // B = false
-            // C = false
-            //
-            // DB-də belə qalır.
-            //
-            // Sadəcə Meeting.Status = Cancelled olur.
-            //
-            // =========================================================
+          
 
             if (isCancelled)
             {
@@ -2701,9 +2712,6 @@ public async Task<IActionResult> GetMeetingInCountry(
             }
 
 
-            // =========================================================
-            // 20. SAVE
-            // =========================================================
 
             await _context.SaveChangesAsync();
 
@@ -3373,38 +3381,181 @@ public async Task<IActionResult> GetMeetingInCountry(
 
 
         [Authorize]
-        [HttpDelete("DeleteNotification/{id}")] // ID-ni URL-dən (Route) almaq daha doğrudur
-        public async Task<IActionResult> DeleteNotification(int id)
+        [HttpDelete("DeleteNotification/{id}")]
+        public async Task<IActionResult> DeleteNotification(
+     int id,
+     [FromQuery] int statusCode)
         {
             try
             {
-                var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+                var userIdClaim =
+                    User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+                if (string.IsNullOrEmpty(userIdClaim))
+                {
+                    return Unauthorized(
+                        "İstifadəçi tapılmadı.");
+                }
+
+
+                var role =
+                    User.FindFirstValue(ClaimTypes.Role);
+
+                if (role != "Admin" && role != "Member")
+                {
+                    return Forbid();
+                }
+
+
+                if (statusCode != 1 && statusCode != 2)
+                {
+                    return BadRequest(
+                        "statusCode yalnız 1 və ya 2 ola bilər.");
+                }
+
+
+                var existNotification =
+                    await _context.Notifitications
+                        .FirstOrDefaultAsync(p =>
+                            p.Id == id);
+
+                if (existNotification == null)
+                {
+                    return NotFound(
+                        "Bildiriş tapılmadı.");
+                }
+
+
+                if (existNotification.UserId?.ToString()
+                    != userIdClaim)
+                {
+                    return Forbid(
+                        "Bu bildiriş üzərində əməliyyat aparmaq səlahiyyətiniz yoxdur.");
+                }
+
+
+                if (statusCode == 1)
+                {
+                    // Artıq arxivdədirsə
+                    if (existNotification.isDeleted == true)
+                    {
+                        return BadRequest(
+                            "Bu bildiriş artıq arxivdədir.");
+                    }
+
+                    existNotification.isDeleted = true;
+
+                    await _context.SaveChangesAsync();
+
+                    return Ok(new
+                    {
+                        message = "Bildiriş arxivləndi.",
+                        notificationId = id,
+                        statusCode = 1,
+                        isDeleted = true,
+                        deletedFromDatabase = false
+                    });
+                }
+
+
+                if (statusCode == 2)
+                {
+                    _context.Notifitications.Remove(
+                        existNotification);
+
+                    await _context.SaveChangesAsync();
+
+                    return Ok(new
+                    {
+                        message = "Bildiriş database-dən silindi.",
+                        notificationId = id,
+                        statusCode = 2,
+                        isDeleted = false,
+                        deletedFromDatabase = true
+                    });
+                }
+
+                return BadRequest(
+                    "Yanlış statusCode.");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(
+                    500,
+                    $"Daxili xəta baş verdi: {ex.Message}");
+            }
+        }
+
+        [Authorize]
+        [HttpPut("RestoreNotification/{id}")]
+        public async Task<IActionResult> RestoreNotification(int id)
+        {
+            try
+            {
+             
+                var userIdClaim =
+                    User.FindFirstValue(ClaimTypes.NameIdentifier);
+
                 if (string.IsNullOrEmpty(userIdClaim))
                     return Unauthorized("İstifadəçi tapılmadı.");
 
-                var existNotification = await _context.Notifitications
-                    .FirstOrDefaultAsync(p => p.Id == id);
+              
+
+                var role =
+                    User.FindFirstValue(ClaimTypes.Role);
+
+                if (role != "Admin" && role != "Member")
+                {
+                    return Forbid();
+                }
+
+              
+
+                var existNotification =
+                    await _context.Notifitications
+                        .FirstOrDefaultAsync(p =>
+                            p.Id == id);
 
                 if (existNotification == null)
-                    return NotFound("Silmək istədiyiniz bildiriş tapılmadı.");
+                {
+                    return NotFound(
+                        "Bildiriş tapılmadı.");
+                }
 
-                if (existNotification.UserId.ToString() != userIdClaim)
-                    return Forbid("Bu bildirişi silmək səlahiyyətiniz yoxdur.");
+               
 
-                _context.Notifitications.Remove(existNotification);
+                if (existNotification.UserId?.ToString() != userIdClaim)
+                {
+                    return Forbid(
+                        "Bu bildirişi bərpa etmək səlahiyyətiniz yoxdur.");
+                }
+
+
+                if (existNotification.isDeleted == false)
+                {
+                    return BadRequest("Bu bildiriş artıq aktivdir.");
+                }
+
+
+                existNotification.isDeleted = false;
+
 
                 await _context.SaveChangesAsync();
 
+
                 return Ok(new
                 {
-                    message = "Bildiriş uğurla silindi.",
-                    notificationId = id
+                    message = "Bildiriş arxivdən geri qaytarıldı.",
+                    notificationId = id,
+                    isDeleted = false
                 });
             }
             catch (Exception ex)
             {
-                // Xəta baş verərsə loglamaq üçün
-                return StatusCode(500, $"Daxili xəta baş verdi: {ex.Message}");
+                return StatusCode(
+                    500,
+                    $"Daxili xəta baş verdi: {ex.Message}");
             }
         }
     }

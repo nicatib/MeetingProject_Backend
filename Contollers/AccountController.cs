@@ -16,6 +16,8 @@ using Microsoft.AspNetCore.Authorization;
 using Meeting_Project.Helper;
 using Humanizer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Identity.Client;
+using Microsoft.AspNetCore.Http.Metadata;
 
 namespace Meeting_Project.Contollers
 {
@@ -337,6 +339,32 @@ namespace Meeting_Project.Contollers
 
             return Ok(new { message = "Token updated successfully" });
         }
+
+        [Authorize]
+        [HttpPost("remove-fcm-token")]
+        public async Task<IActionResult> RemoveFcmToken()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (string.IsNullOrEmpty(userId))
+                return Unauthorized();
+
+            var user = await _userManager.FindByIdAsync(userId);
+
+            if (user == null)
+                return NotFound("User not found");
+
+            user.FcmToken = null;
+
+            var result = await _userManager.UpdateAsync(user);
+
+            if (!result.Succeeded)
+                return BadRequest(result.Errors);
+
+            return Ok(new { message = "FCM token removed successfully" });
+        }
+
+
 
         [Authorize]
         [HttpGet("get-user/{id}")]
@@ -921,5 +949,6 @@ namespace Meeting_Project.Contollers
             await _context.SaveChangesAsync();
             return Ok();
         }
+      
     }
 }
