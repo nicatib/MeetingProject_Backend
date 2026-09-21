@@ -71,9 +71,37 @@ namespace Meeting_Project
                 // Xətanın nədən qaynaqlandığını konsolda (Output) görmək üçün:
                 options.Events = new JwtBearerEvents
                 {
+                    OnMessageReceived = context =>
+                    {
+                        Console.WriteLine("====================================");
+                        Console.WriteLine("JWT MESSAGE RECEIVED");
+                        Console.WriteLine($"TOKEN EXISTS: {!string.IsNullOrEmpty(context.Token)}");
+                        Console.WriteLine("====================================");
+
+                        return Task.CompletedTask;
+                    },
+
                     OnAuthenticationFailed = context =>
                     {
-                        Console.WriteLine($"JWT Authentication Error: {context.Exception.Message}");
+                        Console.WriteLine("====================================");
+                        Console.WriteLine("❌ JWT AUTHENTICATION FAILED");
+                        Console.WriteLine($"ERROR TYPE: {context.Exception.GetType().FullName}");
+                        Console.WriteLine($"ERROR: {context.Exception.Message}");
+                        Console.WriteLine($"FULL ERROR: {context.Exception}");
+                        Console.WriteLine("====================================");
+
+                        return Task.CompletedTask;
+                    },
+
+                    OnTokenValidated = context =>
+                    {
+                        Console.WriteLine("====================================");
+                        Console.WriteLine("✅ JWT TOKEN VALIDATED");
+                        Console.WriteLine(
+                            $"USER: {context.Principal?.Identity?.Name}"
+                        );
+                        Console.WriteLine("====================================");
+
                         return Task.CompletedTask;
                     }
                 };

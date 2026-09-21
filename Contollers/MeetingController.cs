@@ -90,36 +90,37 @@ namespace Meeting_Project.Contollers
         }
 
         private async Task<HotelRoom?> GetRandomAvailableRoom(
-        int hotelId,
-        DateTime start,
-        DateTime end)
+     int hotelId,
+     DateTime start,
+     DateTime end,
+     List<int> participantCountryIds)
         {
             var availableRooms = await _context.HotelRooms
                 .Where(r =>
                     r.HotelId == hotelId &&
                     !r.isDeleted &&
 
+                    !_context.Countrys.Any(c =>
+                        !c.isDeleted &&
+                        c.MeetingRoomId == r.Id &&
+                        !participantCountryIds.Contains(c.Id)
+                    ) &&
+
                     !_context.Meetings.Any(m =>
                         m.RoomId == r.Id &&
                         m.Status != MeetingStatus.Cancelled &&
 
-                        start <
-                            (m.ActualEndTime ?? m.PlannedEndTime) &&
-
-                        end >
-                            (m.ActualStartTime ?? m.PlannedStartTime)
+                        start < (m.ActualEndTime ?? m.PlannedEndTime) &&
+                        end > (m.ActualStartTime ?? m.PlannedStartTime)
                     )
                 )
                 .ToListAsync();
 
-
             if (availableRooms.Count == 0)
                 return null;
 
-
             var randomIndex =
-                Random.Shared.Next(availableRooms.Count);
-
+     Random.Shared.Next(availableRooms.Count);
 
             return availableRooms[randomIndex];
         }
@@ -302,16 +303,17 @@ namespace Meeting_Project.Contollers
                     hotelIdToUse = dto.HotelId;
 
                     room = await GetRandomAvailableRoom(
-                        hotelIdToUse,
-                        dto.StartTime,
-                        dto.EndTime
-                    );
+                      hotelIdToUse,
+                      dto.StartTime,
+                      dto.EndTime,
+                      participantCountryIds
+                  );
 
 
                     if (room == null)
                     {
                         return BadRequest(
-                            "Bu vaxt aralığında seçilmiş hoteldə boş otaq yoxdur"
+                            "Seçilmiş vaxtda bu görüş üçün istifadə edilə bilən boş otaq yoxdur. Başqa ölkəyə bron edilmiş otaq seçilə bilməz"
                         );
                     }
                 }
@@ -1211,7 +1213,9 @@ namespace Meeting_Project.Contollers
     int id,
     [FromBody] CreateMeetingDto dto)
         {
-            // ================= VALIDATION =================
+            // =========================================================
+            // VALIDATION
+            // =========================================================
 
             if (dto == null)
                 return BadRequest("DTO is null");
@@ -1223,23 +1227,44 @@ namespace Meeting_Project.Contollers
             if (existMeeting == null)
                 return BadRequest("Meeting tapılmadı");
 
-            if (existMeeting.Status == MeetingStatus.Finished || existMeeting.Status == MeetingStatus.InProgress || existMeeting.Status == MeetingStatus.Cancelled)
-                return BadRequest("Yalniz baslanmayan gorus dəyişdirilə bilər");
+            if (existMeeting.Status == MeetingStatus.Finished ||
+                existMeeting.Status == MeetingStatus.InProgress ||
+                existMeeting.Status == MeetingStatus.Cancelled)
+            {
+                return BadRequest(
+                    "Yalnız başlanmayan görüş dəyişdirilə bilər"
+                );
+            }
 
             if (string.IsNullOrWhiteSpace(dto.Title))
                 return BadRequest("Title required");
 
             if (dto.Participants == null ||
                 dto.Participants.Count < 2)
-                return BadRequest("Minimum 2 government required");
+            {
+                return BadRequest(
+                    "Minimum 2 government required"
+                );
+            }
 
             if (dto.StartTime >= dto.EndTime)
-                return BadRequest("Başlanğıc və bitmə vaxtı düzgün deyil");
+            {
+                return BadRequest(
+                    "Başlanğıc və bitmə vaxtı düzgün deyil"
+                );
+            }
 
             if (dto.EndTime <= DateTime.Now)
-                return BadRequest("End time düzgün deyil");
+            {
+                return BadRequest(
+                    "End time düzgün deyil"
+                );
+            }
 
-            // ================= GOVERNMENT IDS =================
+
+            // =========================================================
+            // GOVERNMENT IDS
+            // =========================================================
 
             var govIds = dto.Participants
                 .Select(x => x.GovernmentId)
@@ -1247,9 +1272,16 @@ namespace Meeting_Project.Contollers
                 .ToList();
 
             if (govIds.Count < 2)
-                return BadRequest("Minimum 2 fərqli qurum seçilməlidir");
+            {
+                return BadRequest(
+                    "Minimum 2 fərqli qurum seçilməlidir"
+                );
+            }
 
-            // ================= GOVERNMENT VALIDATION =================
+
+            // =========================================================
+            // GOVERNMENT VALIDATION
+            // =========================================================
 
             var govs = await _context.StateGovs
                 .Where(x =>
@@ -1263,27 +1295,57 @@ namespace Meeting_Project.Contollers
                 .ToListAsync();
 
             if (govs.Count != govIds.Count)
-                return BadRequest("Bəzi qurumlar tapılmadı");
+            {
+                return BadRequest(
+                    "Bəzi qurumlar tapılmadı"
+                );
+            }
 
-            // ================= SAME COUNTRY CHECK =================
 
-            var sameCountry = govs
-                .GroupBy(x => x.CountryId)
-                .Any(g => g.Count() > 1);
+            // =========================================================
+            // PARTICIPANT COUNTRY IDS
+            // =========================================================
 
-            //if (sameCountry)
-            //    return BadRequest(
-            //        "Eyni ölkəyə aid qurumlar seçilə bilməz");
+            var participantCountryIds = govs
+                .Select(x => x.CountryId)
+                .Distinct()
+                .ToList();
 
-            // ================= GOVERNMENT CONFLICT =================
+
+            // =========================================================
+            // SELECTED HOTEL VALIDATION
+            // =========================================================
+
+            var selectedHotel = await _context.Hotels
+                .FirstOrDefaultAsync(h =>
+                    h.Id == dto.HotelId &&
+                    !h.isDeleted);
+
+            if (selectedHotel == null)
+            {
+                return BadRequest(
+                    "Seçilmiş hotel tapılmadı"
+                );
+            }
+
+
+            // =========================================================
+            // GOVERNMENT CONFLICT
+            // =========================================================
 
             var governmentConflict = await _context.Meetings
                 .Where(m =>
                     m.Id != id &&
-                    m.Status != MeetingStatus.Cancelled &&
+
+                    (
+                        m.Status == MeetingStatus.Pending ||
+                        m.Status == MeetingStatus.Planned ||
+                        m.Status == MeetingStatus.InProgress
+                    ) &&
 
                     m.Participants.Any(p =>
-                        govIds.Contains(p.GovernmentId)) &&
+                        govIds.Contains(p.GovernmentId)
+                    ) &&
 
                     dto.StartTime < m.PlannedEndTime &&
                     dto.EndTime > m.PlannedStartTime
@@ -1293,97 +1355,162 @@ namespace Meeting_Project.Contollers
             if (governmentConflict)
             {
                 return BadRequest(
-                    "Seçilmiş qurumlardan biri həmin vaxt başqa görüşdədir");
+                    "Seçilmiş qurumlardan biri həmin vaxt başqa görüşdədir"
+                );
             }
 
-            // ================= TRANSACTION =================
+
+            // =========================================================
+            // TRANSACTION
+            // =========================================================
 
             using var transaction =
                 await _context.Database.BeginTransactionAsync(
-                    System.Data.IsolationLevel.Serializable);
+                    System.Data.IsolationLevel.Serializable
+                );
 
             try
             {
-                var duration =
-                    (int)(dto.EndTime - dto.StartTime).TotalMinutes;
+                // =====================================================
+                // DURATION
+                // =====================================================
 
-                // ================= ROOM =================
+                var duration =
+                    (int)(
+                        dto.EndTime -
+                        dto.StartTime
+                    ).TotalMinutes;
+
+
+                // =====================================================
+                // ROOM SELECTION
+                // =====================================================
 
                 HotelRoom? room = null;
 
-                // əvvəlki otaq boşdursa onu saxla
-                var currentRoomConflict = await _context.Meetings
-                    .AnyAsync(m =>
-                        m.Id != id &&
-                        m.RoomId == existMeeting.RoomId &&
-                        m.Status != MeetingStatus.Cancelled &&
-                        dto.StartTime < m.PlannedEndTime &&
-                        dto.EndTime > m.PlannedStartTime
-                    );
 
-                if (!currentRoomConflict)
-                {
-                    room = await _context.HotelRooms
-                        .FirstOrDefaultAsync(r =>
-                            r.Id == existMeeting.RoomId &&
-                            !r.isDeleted);
-                }
-                else
+                // =====================================================
+                // 1. ƏVVƏL PERMANENT ROOM YOXLAYIRIQ
+                // =====================================================
+
+                room = await GetPermanentAvailableRoom(
+                    participantCountryIds,
+                    dto.StartTime,
+                    dto.EndTime
+                );
+
+
+                // =====================================================
+                // 2. PERMANENT ROOM YOXDURSA
+                //    RANDOM AVAILABLE ROOM
+                // =====================================================
+
+                if (room == null)
                 {
                     room = await GetRandomAvailableRoom(
                         dto.HotelId,
                         dto.StartTime,
-                        dto.EndTime);
+                        dto.EndTime,
+                        participantCountryIds
+                    );
                 }
 
-                if (room == null)
-                    return BadRequest(
-                        "Bu vaxt aralığında boş otaq yoxdur");
 
-                // ================= UPDATE =================
+                // =====================================================
+                // 3. HEÇ BİR OTAQ YOXDURSA
+                // =====================================================
+
+                if (room == null)
+                {
+                    return BadRequest(
+                        "Bu vaxt aralığında boş otaq yoxdur"
+                    );
+                }
+
+
+                // =====================================================
+                // UPDATE MEETING
+                // =====================================================
 
                 existMeeting.RoomId = room.Id;
 
                 existMeeting.Title = dto.Title;
-                existMeeting.Description = dto.Description;
 
-                existMeeting.PlannedStartTime = dto.StartTime;
-                existMeeting.PlannedEndTime = dto.EndTime;
+                existMeeting.Description =
+                    dto.Description;
 
-                existMeeting.DurationMinutes = duration;
+                existMeeting.PlannedStartTime =
+                    dto.StartTime;
 
-                // ================= PARTICIPANTS RESET =================
+                existMeeting.PlannedEndTime =
+                    dto.EndTime;
+
+                existMeeting.DurationMinutes =
+                    duration;
+
+
+                // =====================================================
+                // PARTICIPANTS RESET
+                // =====================================================
 
                 _context.MeetingParticipant.RemoveRange(
-                    existMeeting.Participants);
+                    existMeeting.Participants
+                );
 
-                existMeeting.Participants = govIds
-                    .Select(x => new MeetingParticipant
-                    {
-                        GovernmentId = x
-                    })
-                    .ToList();
+                existMeeting.Participants =
+                    govIds
+                        .Select(x =>
+                            new MeetingParticipant
+                            {
+                                GovernmentId = x,
+                                isAccepted = null
+                            }
+                        )
+                        .ToList();
+
+
+                // =====================================================
+                // SAVE
+                // =====================================================
 
                 await _context.SaveChangesAsync();
 
+
+
                 await transaction.CommitAsync();
+
+
 
                 return Ok(new
                 {
-                    message = "Meeting updated successfully",
-                    meetingId = existMeeting.Id,
-                    roomId = room.Id
+                    message =
+                        "Meeting updated successfully",
+
+                    meetingId =
+                        existMeeting.Id,
+
+                    roomId =
+                        room.Id,
+
+                    roomNumber =
+                        room.RoomNumber
                 });
             }
             catch (Exception ex)
             {
                 await transaction.RollbackAsync();
 
-                return StatusCode(500, new
-                {
-                    message = "Server error",
-                    error = ex.Message
-                });
+                return StatusCode(
+                    500,
+                    new
+                    {
+                        message =
+                            "Server error",
+
+                        error =
+                            ex.Message
+                    }
+                );
             }
         }
 
@@ -2364,7 +2491,6 @@ public async Task<IActionResult> GetAllCircleMeetingByCountryId()
 
             return Ok(returnNotification);
         }
-        ////////////////////////////////////////////////////////////////////
         [Authorize]
         [HttpGet("getArchivedNotification")]
         public async Task<IActionResult> GetArchivedNotification()
